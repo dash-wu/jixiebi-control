@@ -1,0 +1,163 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rm_65_description">
+
+    <link name="world"/>
+    <joint name="fixed" type="fixed">
+        <parent link="world"/>
+        <child link="base_link"/>
+    </joint>
+
+    <xacro:include filename="$(find rm_description)/urdf/rm_65_gazebo.urdf" />
+
+    <link name="arm_camera_link">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.02 0.04 0.02"/>
+            </geometry>
+            <material name="camera_gray">
+                <color rgba="0.3 0.3 0.3 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.02 0.04 0.02"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.05"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+        </inertial>
+    </link>
+
+    <joint name="arm_camera_joint" type="fixed">
+        <parent link="Link6"/>
+        <child link="arm_camera_link"/>
+        <origin xyz="0.05 0 0.04" rpy="0 1.57 0"/>
+    </joint>
+
+    <gazebo reference="base_link">
+        <self_collide>false</self_collide>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="link1">
+        <material>Gazebo/Purple</material>
+        <self_collide>false</self_collide>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="link2">
+        <material>Gazebo/Red</material>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="link3">
+        <material>Gazebo/Blue</material>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="link4">
+        <material>Gazebo/Green</material>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="link5">
+        <material>Gazebo/Yellow</material>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="link6">
+        <material>Gazebo/Orange</material>
+        <gravity>false</gravity>
+    </gazebo>
+
+    <gazebo reference="arm_camera_link">
+        <material>Gazebo/Black</material>
+        <gravity>false</gravity>
+    </gazebo>
+
+    <gazebo reference="arm_camera_link">
+        <sensor name="arm_camera" type="camera">
+            <always_on>true</always_on>
+            <update_rate>15</update_rate>
+            <visualize>false</visualize>
+            <camera>
+                <horizontal_fov>1.047</horizontal_fov>
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>R8G8B8</format>
+                </image>
+                <clip>
+                    <near>0.05</near>
+                    <far>3.0</far>
+                </clip>
+            </camera>
+            <plugin name="arm_camera_plugin" filename="libgazebo_ros_camera.so">
+                <ros>
+                    <namespace>/arm_camera</namespace>
+                </ros>
+                <camera_name>arm_camera</camera_name>
+                <frame_name>arm_camera_optical_frame</frame_name>
+            </plugin>
+        </sensor>
+    </gazebo>
+
+    <gazebo>
+        <is_static>true</is_static>
+        <self_collide>true</self_collide>
+    </gazebo>
+
+    <ros2_control name="GazeboSystem" type="system">
+        <hardware>
+            <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+        </hardware>
+        <joint name="joint1">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="joint2">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="joint3">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="joint4">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="joint5">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="joint6">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+    </ros2_control>
+
+    <gazebo>
+        <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+            <parameters>$(find rm_65_config)/config/ros2_controllers.yaml</parameters>
+            <robot_param>robot_description</robot_param>
+            <robot_param_node>robot_state_publisher</robot_param_node>
+        </plugin>
+    </gazebo>
+
+</robot>

@@ -1,0 +1,12 @@
+# Joint-space poses for gesture-driven pick and place.
+# Tune these values on your robot/sim using RViz or teach pendant.
+home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# Left/right pre-grasp zones. Adjust for your table layout.
+left_zone: [0.35, -0.45, 1.10, 0.0, 1.20, 0.0]
+right_zone: [-0.35, -0.45, 1.10, 0.0, 1.20, 0.0]
+place_zone: [0.0, -0.25, 0.95, 0.0, 1.00, 0.0]
+
+# Joint2 offsets used during grasp/place approach.
+pre_grasp_lift_joint2: 0.05
+grasp_lower_joint2: -0.03

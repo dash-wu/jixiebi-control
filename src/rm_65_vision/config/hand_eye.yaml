@@ -1,0 +1,7 @@
+# Hand-eye calibration parameters for grasp_aligner.
+# Tune pixel_to_meter on the real robot after mounting the arm camera.
+fx: 554.0
+fy: 554.0
+cx: 320.0
+cy: 240.0
+pixel_to_meter: 0.00015

@@ -1,0 +1,67 @@
+# RM65 手臂跟随
+#
+# 流程：
+#   1. 启动 → 机械臂竖直朝上 (robot_ready_pose)
+#   2. 你也竖臂伸直朝上 → 自动激活（此姿态 = 零点）
+#   3. 激活后你才开始动 → 机械臂才跟随
+#
+# upper_arm_elev  大臂抬升  → joint2
+# elbow_bend      肘弯曲    → joint3
+# wrist_pitch     腕俯仰    → joint5
+# （当前关闭 joint1/4/6 跟随，见 active_joint_indices）
+
+# 竖直就绪位（RM65 全零位 = 臂尖朝上，FK 验证 tip_z≈0.85m）
+robot_ready_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+robot_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# 仅这些关节参与跟随（0-based：1=joint2, 2=joint3, 4=joint5）
+active_joint_indices: [1, 2, 4]
+
+# 人体竖臂激活条件（全部满足才激活）
+# 竖臂角用画面内抬升（忽略深度），一般竖臂约 130°~180°
+activation:
+  min_upper_arm_elev_deg: 115.0
+  max_elbow_bend_deg: 25.0
+  min_extension_ratio: 1.55
+  min_extension_override_raise: 1.75
+  min_elbow_raise: 0.02
+  min_wrist_raise: 0.02
+  hold_frames: 12
+
+mapping:
+  upper_arm_elev:
+    index: 1
+    scale: 1.45
+    deadzone: 0.015
+
+  elbow_bend:
+    index: 2
+    scale: 1.85
+    deadzone: 0.008
+
+  wrist_pitch:
+    index: 4
+    scale: 0.95
+    deadzone: 0.025
+    wrap: true
+    max_delta: 1.2
+
+grasp:
+  approach_delta: [0.0, -0.06, 0.10, 0.0, -0.08, 0.0]
+  retract_delta: [0.0, 0.08, -0.08, 0.0, 0.06, 0.0]
+
+joint_limits:
+  joint1: [-2.0, 2.0]
+  joint2: [-2.0, 2.0]
+  joint3: [-0.05, 2.3]
+  joint4: [-2.0, 2.0]
+  joint5: [-1.57, 1.57]
+  joint6: [-2.0, 2.0]
+
+gripper_close_threshold: 0.30
+gripper_open_threshold: 0.60
+
+stream_rate_hz: 20.0
+trajectory_duration_sec: 0.18
+ready_pose_duration_sec: 0.8
+output_smoothing: 0.62
