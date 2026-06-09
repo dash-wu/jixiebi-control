@@ -26,6 +26,7 @@ def generate_launch_description():
                 {'publish_ros': True},
                 {'smoothing': 0.35},
                 {'config_file': config_file},
+                {'mirror_preview': True},
             ],
         ),
     ])

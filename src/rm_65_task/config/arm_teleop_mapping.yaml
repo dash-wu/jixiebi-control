@@ -5,17 +5,18 @@
 #   2. 你也竖臂伸直朝上 → 自动激活（此姿态 = 零点）
 #   3. 激活后你才开始动 → 机械臂才跟随
 #
+# upper_arm_yaw   大臂左右  → joint1
 # upper_arm_elev  大臂抬升  → joint2
 # elbow_bend      肘弯曲    → joint3
 # wrist_pitch     腕俯仰    → joint5
-# （当前关闭 joint1/4/6 跟随，见 active_joint_indices）
+# （joint4/6 锁定，见 active_joint_indices）
 
 # 竖直就绪位（RM65 全零位 = 臂尖朝上，FK 验证 tip_z≈0.85m）
 robot_ready_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 robot_home: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-# 仅这些关节参与跟随（0-based：1=joint2, 2=joint3, 4=joint5）
-active_joint_indices: [1, 2, 4]
+# 参与跟随：0=joint1, 1=joint2, 2=joint3, 4=joint5
+active_joint_indices: [0, 1, 2, 4]
 
 # 人体竖臂激活条件（全部满足才激活）
 # 竖臂角用画面内抬升（忽略深度），一般竖臂约 130°~180°
@@ -28,23 +29,31 @@ activation:
   min_wrist_raise: 0.02
   hold_frames: 12
 
+# 映射模式：激活姿态为零点，人体关节增量(度)≈机械臂关节增量(度)
 mapping:
+  upper_arm_yaw:
+    index: 0
+    scale: -1.0
+    deadzone: 0.012
+    wrap: true
+    max_delta: 3.1
+
   upper_arm_elev:
     index: 1
-    scale: 1.45
-    deadzone: 0.015
+    scale: -1.0
+    deadzone: 0.004
 
   elbow_bend:
     index: 2
-    scale: 1.85
-    deadzone: 0.008
+    scale: 1.0
+    deadzone: 0.0
 
   wrist_pitch:
     index: 4
-    scale: 0.95
-    deadzone: 0.025
+    scale: -1.0
+    deadzone: 0.008
     wrap: true
-    max_delta: 1.2
+    max_delta: 3.1
 
 grasp:
   approach_delta: [0.0, -0.06, 0.10, 0.0, -0.08, 0.0]
@@ -62,6 +71,21 @@ gripper_close_threshold: 0.30
 gripper_open_threshold: 0.60
 
 stream_rate_hz: 20.0
-trajectory_duration_sec: 0.18
+trajectory_duration_sec: 0.12
 ready_pose_duration_sec: 0.8
-output_smoothing: 0.62
+output_smoothing: 0.42
+output_smoothing_by_joint:
+  '0': 0.28
+  '2': 0.15
+
+# 追踪算法参数（world landmarks + swing-twist + J1 hold）
+tracking:
+  j1_min_horizontal_norm: 0.05
+  j1_yaw_hold: true
+  one_euro:
+    min_cutoff: 1.0
+    beta: 0.007
+    d_cutoff: 1.0
+
+# teleop_mode: joints（默认）| ik（未实现，见 docs/TELEOP_MODES.md）
+teleop_mode: joints

@@ -21,7 +21,6 @@ class TeleopController(Node):
         'upper_arm_yaw',
         'elbow_bend',
         'wrist_pitch',
-        'wrist_roll',
         'palm_open',
     ]
 
@@ -29,11 +28,18 @@ class TeleopController(Node):
         super().__init__('teleop_controller')
         self.declare_parameter('use_sim', True)
         self.declare_parameter('mapping_file', '')
+        self.declare_parameter('calibration_file', '')
         self.declare_parameter('enabled', True)
 
         self._use_sim = self.get_parameter('use_sim').value
         self._enabled = self.get_parameter('enabled').value
         self._config = self._load_mapping()
+        self._merge_calibration()
+        teleop_mode = str(self._config.get('teleop_mode', 'joints'))
+        if teleop_mode != 'joints':
+            self.get_logger().warn(
+                f'teleop_mode={teleop_mode} not implemented; using joints mapping'
+            )
         self._mapper = TeleopMapper(self._config)
         self._latest_human = None
         self._gripper_closed = False
@@ -70,6 +76,26 @@ class TeleopController(Node):
             raise RuntimeError('mapping_file parameter is required')
         with open(mapping_file, 'r', encoding='utf-8') as handle:
             return yaml.safe_load(handle)
+
+    def _merge_calibration(self) -> None:
+        cal_file = self.get_parameter('calibration_file').value
+        if not cal_file:
+            from ament_index_python.packages import get_package_share_directory
+            import os
+            try:
+                share = get_package_share_directory('rm_65_task')
+                cal_file = os.path.join(share, 'config', 'arm_teleop_calibration.yaml')
+            except Exception:
+                return
+        try:
+            with open(cal_file, 'r', encoding='utf-8') as handle:
+                data = yaml.safe_load(handle) or {}
+        except FileNotFoundError:
+            return
+        cal = data.get('calibration')
+        if cal:
+            self._config['calibration'] = cal
+            self.get_logger().info(f'Loaded teleop calibration: {cal_file}')
 
     def _set_active(self, active: bool, reason: str) -> None:
         if active == self._teleop_active:
@@ -190,11 +216,11 @@ class TeleopController(Node):
             return
         h = self._latest_human
         self.get_logger().info(
-            'Following | human elev=%.2f yaw=%.2f elbow=%.2f wrist_p=%.2f wrist_r=%.2f -> robot '
+            'Following | human elev=%.2f yaw=%.2f elbow=%.2f wrist_p=%.2f -> robot '
             '[%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]'
             % (
                 h['upper_arm_elev'], h['upper_arm_yaw'], h['elbow_bend'],
-                h['wrist_pitch'], h['wrist_roll'],
+                h['wrist_pitch'],
                 *robot_joints,
             )
         )

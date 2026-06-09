@@ -14,6 +14,8 @@ from ament_index_python.packages import get_package_share_directory
 from mediapipe.tasks.python.core.base_options import BaseOptions
 from mediapipe.tasks.python.vision import HolisticLandmarker, HolisticLandmarkerOptions, RunningMode
 from rm_65_vision.gesture_classifier import GestureClassifier, GestureDebouncer
+from rm_65_vision.joint_filter import LandmarkFilter3D
+from rm_65_vision.swing_twist import swing_twist_upper_arm, upper_arm_elevation_rad
 from rm_65_vision.ui_text import render_panel
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -31,21 +33,20 @@ class ArmTeleopTracker(Node):
     COLOR_FORE = (40, 160, 255)    # BGR 小臂
     COLOR_PALM = (40, 255, 160)    # BGR 手掌
 
-    JOINT_NAMES = [
+    ARM_JOINT_NAMES = [
         'upper_arm_yaw',
         'upper_arm_elev',
         'elbow_bend',
         'wrist_pitch',
-        'wrist_roll',
-        'palm_open',
     ]
+
+    JOINT_NAMES = ARM_JOINT_NAMES + ['palm_open']
 
     JOINT_LABELS = {
         'upper_arm_yaw': '大臂左右',
         'upper_arm_elev': '大臂抬升',
         'elbow_bend': '肘部弯曲',
         'wrist_pitch': '手腕俯仰',
-        'wrist_roll': '手掌旋转',
         'palm_open': '手掌张开',
     }
 
@@ -74,22 +75,37 @@ class ArmTeleopTracker(Node):
         self.declare_parameter('model_path', '')
         self.declare_parameter('gesture_debounce_frames', 6)
         self.declare_parameter('config_file', '')
+        self.declare_parameter('mirror_preview', True)
+        self.declare_parameter('auto_detect_arm', True)
+        self.declare_parameter('upper_arm_vector_smoothing', 0.55)
+        self.declare_parameter('upper_arm_joint_smoothing', 0.42)
+        self.declare_parameter('calibration_file', '')
 
         self._camera_id = self.get_parameter('camera_id').value
         self._smoothing = float(self.get_parameter('smoothing').value)
         self._show_debug = self.get_parameter('show_debug').value
         self._publish_ros = self.get_parameter('publish_ros').value
         self._min_visibility = float(self.get_parameter('min_visibility').value)
+        self._mirror_preview = bool(self.get_parameter('mirror_preview').value)
+        self._upper_arm_vector_smoothing = float(
+            self.get_parameter('upper_arm_vector_smoothing').value
+        )
+        self._upper_arm_joint_smoothing = float(
+            self.get_parameter('upper_arm_joint_smoothing').value
+        )
 
         side = self.get_parameter('tracking_side').value.lower()
-        self._tracking_side = side
-        self._arm_ids = self.RIGHT_ARM if side == 'right' else self.LEFT_ARM
+        self._auto_detect_arm = bool(self.get_parameter('auto_detect_arm').value)
+        self._manual_side_lock = False
+        self._auto_side_hold = 0
+        self._apply_tracking_side(side)
 
         self._publisher = self.create_publisher(JointState, 'human_arm_joints', 10)
         self._gesture_pub = self.create_publisher(String, 'hand_gesture', 10)
         self._gesture_cmd_pub = self.create_publisher(String, 'gesture_cmd', 10)
         self._status_pub = self.create_publisher(String, 'teleop_status', 10)
         self._activation_cfg = self._load_activation_config()
+        self._tracking_cfg = self._load_tracking_config()
         self._active_robot_indices = self._load_active_robot_indices()
         self._robot_actual: Optional[Dict[str, float]] = None
         self._robot_target: Optional[Dict[str, float]] = None
@@ -102,8 +118,24 @@ class ArmTeleopTracker(Node):
         self._current_gesture = 'None'
         self._current_gesture_raw = 'None'
         self._reference: Optional[Tuple[float, ...]] = None
+        self._ref_torso: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+        self._ref_upper_arm_dir: Optional[np.ndarray] = None
+        self._use_world_landmarks = False
+        self._world_warned = False
         self._filtered: Optional[Tuple[float, ...]] = None
         self._last_raw: Optional[Dict[str, float]] = None
+        self._prev_elbow_delta: Optional[float] = None
+        self._last_yaw_delta: Optional[float] = None
+        self._calibration_active = False
+        self._calibration_step = 0
+        self._calibration_samples: list = []
+        oe = self._tracking_cfg.get('one_euro', {})
+        self._landmark_filter = LandmarkFilter3D(
+            min_cutoff=float(oe.get('min_cutoff', 1.0)),
+            beta=float(oe.get('beta', 0.007)),
+            d_cutoff=float(oe.get('d_cutoff', 1.0)),
+        )
+        self._last_horizontal_norm = 0.0
         self._frames_detected = 0
         self._frames_total = 0
         self._timestamp_ms = 0
@@ -137,8 +169,32 @@ class ArmTeleopTracker(Node):
         self.create_subscription(JointState, 'robot_arm_joints', self._on_robot_arm_command, 10)
         self.get_logger().info(
             f'Arm tracker ready (MediaPipe Tasks). Model: {model_path}\n'
-            'Raise arm straight up to activate follow. Keys: [R]=reset [1]=right [2]=left [Q]=quit'
+            'Raise arm straight up to activate follow. Keys: '
+            '[R]=reset [K]=calibrate [1]=right [2]=left [Q]=quit'
         )
+
+    def _load_tracking_config(self) -> dict:
+        config_file = self.get_parameter('config_file').value
+        defaults = {
+            'j1_min_horizontal_norm': 0.05,
+            'j1_yaw_hold': True,
+            'one_euro': {'min_cutoff': 1.0, 'beta': 0.007, 'd_cutoff': 1.0},
+        }
+        if not config_file:
+            return defaults
+        with open(config_file, 'r', encoding='utf-8') as handle:
+            data = yaml.safe_load(handle) or {}
+        tracking = data.get('tracking', {})
+        merged = {**defaults, **tracking}
+        if 'one_euro' in tracking:
+            merged['one_euro'] = {**defaults['one_euro'], **tracking['one_euro']}
+        return merged
+
+    CALIBRATION_STEPS = [
+        ('竖臂朝上', {'upper_arm_yaw': 0.0, 'upper_arm_elev': 0.0}),
+        ('大臂左/右摆约45°', {'upper_arm_yaw': 0.785, 'upper_arm_elev': 0.0}),
+        ('大臂前伸至水平', {'upper_arm_yaw': 0.0, 'upper_arm_elev': -0.785}),
+    ]
 
     def _load_activation_config(self) -> dict:
         config_file = self.get_parameter('config_file').value
@@ -266,6 +322,22 @@ class ArmTeleopTracker(Node):
         return np.array([landmark.x, landmark.y, landmark.z], dtype=float)
 
     @staticmethod
+    def _elbow_flexion_rad(shoulder, elbow, wrist) -> float:
+        """Elbow flexion: 0=straight, pi/2=90deg bend. Uses triangle law of cosines."""
+        s = ArmTeleopTracker._lm_to_vec(shoulder)
+        e = ArmTeleopTracker._lm_to_vec(elbow)
+        w = ArmTeleopTracker._lm_to_vec(wrist)
+        a = float(np.linalg.norm(e - s))
+        b = float(np.linalg.norm(w - e))
+        c = float(np.linalg.norm(w - s))
+        if a < 1e-6 or b < 1e-6:
+            return 0.0
+        cos_val = (a * a + b * b - c * c) / (2.0 * a * b)
+        cos_val = float(np.clip(cos_val, -1.0, 1.0))
+        interior = math.acos(cos_val)
+        return float(math.pi - interior)
+
+    @staticmethod
     def _angle_between(v1: np.ndarray, v2: np.ndarray) -> float:
         n1 = np.linalg.norm(v1)
         n2 = np.linalg.norm(v2)
@@ -275,17 +347,221 @@ class ArmTeleopTracker(Node):
         return float(math.acos(cos_val))
 
     @staticmethod
-    def _upper_arm_elevation_rad(upper_arm: np.ndarray) -> float:
-        """Elevation in image plane: pi=straight up, pi/2=horizontal.
+    def _signed_angle_between(v1: np.ndarray, v2: np.ndarray, axis: np.ndarray) -> float:
+        """Signed angle from v1 to v2 around axis (right-hand rule)."""
+        n1 = np.linalg.norm(v1)
+        n2 = np.linalg.norm(v2)
+        na = np.linalg.norm(axis)
+        if n1 < 1e-8 or n2 < 1e-8 or na < 1e-8:
+            return 0.0
+        v1_u = v1 / n1
+        v2_u = v2 / n2
+        axis_u = axis / na
+        cross = np.cross(v1_u, v2_u)
+        return float(math.atan2(np.dot(cross, axis_u), np.dot(v1_u, v2_u)))
 
-        Ignore depth (z) so raising the arm beside the body is not penalized
-        when the user faces the camera at an angle.
+    def _torso_basis(self, pose_landmarks) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Body frame from pose landmarks (world or image coords)."""
+        ls, rs = pose_landmarks[11], pose_landmarks[12]
+        lh, rh = pose_landmarks[23], pose_landmarks[24]
+        if not self._use_world_landmarks:
+            min_vis = min(
+                getattr(lm, 'visibility', 1.0) for lm in (ls, rs, lh, rh)
+            )
+            if min_vis < self._min_visibility:
+                return None
+
+        lateral_raw = self._lm_to_vec(rs) - self._lm_to_vec(ls)
+        lat_norm = np.linalg.norm(lateral_raw)
+        if lat_norm < 1e-6:
+            return None
+        lateral = lateral_raw / lat_norm
+
+        mid_sh = (self._lm_to_vec(ls) + self._lm_to_vec(rs)) * 0.5
+        mid_hip = (self._lm_to_vec(lh) + self._lm_to_vec(rh)) * 0.5
+        down_raw = mid_hip - mid_sh
+        down_norm = np.linalg.norm(down_raw)
+        if down_norm < 1e-6:
+            return None
+        down = down_raw / down_norm
+
+        forward = np.cross(lateral, down)
+        fwd_norm = np.linalg.norm(forward)
+        if fwd_norm < 1e-6:
+            return None
+        forward = forward / fwd_norm
+        return lateral, down, forward
+
+    def _resolve_pose_for_angles(self, result, pose_landmarks):
+        """Prefer world landmarks for joint angles; image landmarks for UI."""
+        world = getattr(result, 'pose_world_landmarks', None)
+        if world and len(world) >= 17:
+            if not self._use_world_landmarks:
+                self._use_world_landmarks = True
+                self.get_logger().info('Using pose_world_landmarks for joint angles')
+            return world
+        if not self._world_warned:
+            self._world_warned = True
+            self.get_logger().warn(
+                'pose_world_landmarks unavailable; falling back to image coords'
+            )
+        self._use_world_landmarks = False
+        return pose_landmarks
+
+    def _filtered_arm_points(
+        self,
+        shoulder,
+        elbow,
+        wrist,
+        timestamp_sec: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        points = {
+            'shoulder': self._lm_to_vec(shoulder),
+            'elbow': self._lm_to_vec(elbow),
+            'wrist': self._lm_to_vec(wrist),
+        }
+        if self._use_world_landmarks:
+            points = self._landmark_filter.filter(points, timestamp_sec)
+        return points['shoulder'], points['elbow'], points['wrist']
+
+    @staticmethod
+    def _upper_arm_yaw_in_frame(
+        upper_arm: np.ndarray,
+        lateral: np.ndarray,
+        down: np.ndarray,
+        forward: np.ndarray,
+    ) -> float:
+        """Azimuth of upper arm in a fixed torso frame (0 when arm points forward-up)."""
+        u_h = upper_arm - np.dot(upper_arm, down) * down
+        h_norm = np.linalg.norm(u_h)
+        if h_norm < 1e-3:
+            return 0.0
+        u_h /= h_norm
+        sin_yaw = float(np.dot(np.cross(forward, u_h), down))
+        cos_yaw = float(np.dot(forward, u_h))
+        return float(math.atan2(sin_yaw, cos_yaw))
+
+    @staticmethod
+    def _upper_arm_yaw_rad(upper_arm: np.ndarray, lateral: np.ndarray, down: np.ndarray) -> float:
+        forward = np.cross(lateral, down)
+        fwd_norm = np.linalg.norm(forward)
+        if fwd_norm < 1e-6:
+            return float(math.atan2(upper_arm[0], upper_arm[2] + 1e-8))
+        forward /= fwd_norm
+        return ArmTeleopTracker._upper_arm_yaw_in_frame(upper_arm, lateral, down, forward)
+
+    @staticmethod
+    def _upper_arm_elevation_rad(upper_arm: np.ndarray, down: Optional[np.ndarray] = None) -> float:
+        """Elevation: 0=down, pi/2=horizontal, pi=straight up.
+
+        atan2 form keeps good sensitivity near vertical (activation pose).
         """
+        u_norm = np.linalg.norm(upper_arm)
+        if u_norm < 1e-8:
+            return math.pi / 2
+        u = upper_arm / u_norm
+        if down is not None:
+            vertical = -float(np.dot(u, down))
+            horizontal = float(np.linalg.norm(u - np.dot(u, down) * down))
+            return float(math.atan2(vertical, horizontal + 1e-8) + math.pi / 2)
         sideward = abs(float(upper_arm[0]))
         upward = max(-float(upper_arm[1]), 0.0)
         if sideward < 1e-8 and upward < 1e-8:
             return math.pi / 2
         return math.atan2(upward, sideward) + math.pi / 2
+
+    def _wrist_pitch_rad(
+        self,
+        upper_arm: np.ndarray,
+        forearm: np.ndarray,
+        hand_dir: np.ndarray,
+        torso: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    ) -> float:
+        """Wrist flexion in 3D, referenced to torso down (not image-plane cross)."""
+        f_norm = np.linalg.norm(forearm)
+        if f_norm < 1e-8:
+            return 0.0
+        f = forearm / f_norm
+
+        lateral = down = None
+        if torso is not None:
+            lateral, down, _ = torso
+
+        ref_down = down if down is not None else np.array([0.0, 1.0, 0.0])
+        flex_ref = ref_down - np.dot(ref_down, f) * f
+        flex_norm = np.linalg.norm(flex_ref)
+        if flex_norm < 1e-6 and lateral is not None:
+            flex_ref = lateral - np.dot(lateral, f) * f
+            flex_norm = np.linalg.norm(flex_ref)
+
+        if flex_norm < 1e-6:
+            arm_normal = np.cross(upper_arm, forearm)
+            n_norm = np.linalg.norm(arm_normal)
+            if n_norm < 1e-8:
+                return self._angle_between(forearm, hand_dir)
+            arm_normal /= n_norm
+            if lateral is not None and np.dot(arm_normal, lateral) < 0.0:
+                arm_normal = -arm_normal
+            return self._signed_angle_between(forearm, hand_dir, arm_normal)
+
+        flex_ref /= flex_norm
+        axis = np.cross(f, flex_ref)
+        axis_norm = np.linalg.norm(axis)
+        if axis_norm < 1e-8:
+            return self._angle_between(forearm, hand_dir)
+        axis /= axis_norm
+        if lateral is not None and np.dot(axis, lateral) < 0.0:
+            axis = -axis
+        return self._signed_angle_between(forearm, hand_dir, axis)
+
+    def _mp_side_for_user(self, user_side: str) -> str:
+        """Map user's anatomical side to MediaPipe left/right (mirrored image swaps them)."""
+        if self._mirror_preview:
+            return 'left' if user_side == 'right' else 'right'
+        return user_side
+
+    def _arm_ids_from_user_side(self, user_side: str) -> dict:
+        mp_side = self._mp_side_for_user(user_side)
+        return self.RIGHT_ARM if mp_side == 'right' else self.LEFT_ARM
+
+    def _apply_tracking_side(self, user_side: str) -> None:
+        self._tracking_side = user_side
+        self._arm_ids = self._arm_ids_from_user_side(user_side)
+
+    def _arm_activity_score(self, pose_landmarks, user_side: str) -> float:
+        ids = self._arm_ids_from_user_side(user_side)
+        vis = [
+            getattr(pose_landmarks[ids[name]], 'visibility', 1.0)
+            for name in ('shoulder', 'elbow', 'wrist')
+        ]
+        if min(vis) < self._min_visibility:
+            return 0.0
+        shoulder = pose_landmarks[ids['shoulder']]
+        elbow = pose_landmarks[ids['elbow']]
+        wrist = pose_landmarks[ids['wrist']]
+        raise_amt = max(float(shoulder.y - elbow.y), 0.0) + max(float(elbow.y - wrist.y), 0.0)
+        return min(vis) * (1.0 + raise_amt * 8.0)
+
+    def _maybe_auto_detect_arm(self, pose_landmarks) -> None:
+        if not self._auto_detect_arm or self._teleop_active or self._manual_side_lock:
+            return
+        left_score = self._arm_activity_score(pose_landmarks, 'left')
+        right_score = self._arm_activity_score(pose_landmarks, 'right')
+        if max(left_score, right_score) < 0.05:
+            self._auto_side_hold = 0
+            return
+        detected = 'left' if left_score >= right_score else 'right'
+        if detected == self._tracking_side:
+            self._auto_side_hold = 0
+            return
+        self._auto_side_hold += 1
+        if self._auto_side_hold >= 10:
+            self._apply_tracking_side(detected)
+            self._reset_reference_state()
+            self._activation_hold = 0
+            self._auto_side_hold = 0
+            label = '左臂' if detected == 'left' else '右臂'
+            self.get_logger().info(f'Auto-detected active arm: {label}')
 
     def _visible(self, pose_landmarks, name: str) -> bool:
         idx = self._arm_ids[name]
@@ -294,53 +570,127 @@ class ArmTeleopTracker(Node):
 
     def _get_hand_landmarks(self, result):
         """Return 21-point hand landmarks for the tracked arm side, if valid."""
-        hand = result.right_hand_landmarks if self._tracking_side == 'right' else result.left_hand_landmarks
+        mp_side = self._mp_side_for_user(self._tracking_side)
+        hand = result.right_hand_landmarks if mp_side == 'right' else result.left_hand_landmarks
         if GestureClassifier.is_valid(hand):
             return hand
         # 追踪侧未检测到时，尝试另一只手（侧身时可能只检测到一只）
-        fallback = result.left_hand_landmarks if self._tracking_side == 'right' else result.right_hand_landmarks
+        fallback = result.left_hand_landmarks if mp_side == 'right' else result.right_hand_landmarks
         if GestureClassifier.is_valid(fallback):
             return fallback
         return None
 
+    def _reset_motion_filters(self) -> None:
+        self._prev_elbow_delta = None
+        self._last_yaw_delta = None
+        self._landmark_filter.reset()
+
+    def _reset_reference_state(self) -> None:
+        self._reference = None
+        self._ref_torso = None
+        self._ref_upper_arm_dir = None
+        self._filtered = None
+        self._reset_motion_filters()
+
+    def _capture_activation_reference(
+        self,
+        raw: Dict[str, float],
+        angle_pose_landmarks,
+        upper_arm_raw: np.ndarray,
+    ) -> None:
+        torso = self._torso_basis(angle_pose_landmarks)
+        ref_values = dict(raw)
+        if torso is not None:
+            self._ref_torso = tuple(axis.copy() for axis in torso)
+            u_norm = float(np.linalg.norm(upper_arm_raw))
+            if u_norm > 1e-6:
+                self._ref_upper_arm_dir = upper_arm_raw / u_norm
+            yaw, elev, h_norm = self._compute_upper_arm_joints(upper_arm_raw)
+            ref_values['upper_arm_yaw'] = yaw
+            ref_values['upper_arm_elev'] = elev
+            self._last_horizontal_norm = h_norm
+            self._last_yaw_delta = 0.0
+        self._reference = self._dict_to_tuple(ref_values)
+
+    def _compute_upper_arm_joints(
+        self,
+        upper_arm_raw: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        """Swing-twist: yaw (J1), elev (J2), horizontal norm for gating."""
+        if self._ref_torso is None or self._ref_upper_arm_dir is None:
+            return 0.0, upper_arm_elevation_rad(upper_arm_raw, np.array([0.0, 1.0, 0.0])), 0.0
+        _, down, _ = self._ref_torso
+        yaw, elev, h_norm = swing_twist_upper_arm(
+            self._ref_upper_arm_dir, upper_arm_raw, down
+        )
+        return yaw, elev, h_norm
+
     def _compute_arm_angles(
         self,
-        pose_landmarks,
+        angle_pose_landmarks,
         hand_landmarks,
         palm_open: float,
+        timestamp_sec: float,
     ) -> Dict[str, float]:
-        shoulder = pose_landmarks[self._arm_ids['shoulder']]
-        elbow = pose_landmarks[self._arm_ids['elbow']]
-        wrist = pose_landmarks[self._arm_ids['wrist']]
+        shoulder = angle_pose_landmarks[self._arm_ids['shoulder']]
+        elbow = angle_pose_landmarks[self._arm_ids['elbow']]
+        wrist = angle_pose_landmarks[self._arm_ids['wrist']]
 
-        upper_arm = self._lm_to_vec(elbow) - self._lm_to_vec(shoulder)
-        forearm = self._lm_to_vec(wrist) - self._lm_to_vec(elbow)
+        sh_vec, el_vec, wr_vec = self._filtered_arm_points(
+            shoulder, elbow, wrist, timestamp_sec
+        )
+        upper_arm_raw = el_vec - sh_vec
+        forearm_raw = wr_vec - el_vec
 
-        upper_arm_yaw = math.atan2(upper_arm[0], upper_arm[2] + 1e-8)
-        upper_arm_elev = self._upper_arm_elevation_rad(upper_arm)
-        elbow_bend = self._angle_between(upper_arm, forearm)
+        torso = self._torso_basis(angle_pose_landmarks)
 
-        hand_dir = forearm.copy()
-        palm_span = np.array([1.0, 0.0, 0.0])
+        if self._ref_torso is not None and self._ref_upper_arm_dir is not None:
+            upper_arm_yaw, upper_arm_elev, h_norm = self._compute_upper_arm_joints(
+                upper_arm_raw
+            )
+            self._last_horizontal_norm = h_norm
+        elif torso is not None:
+            _, down, _ = torso
+            upper_arm_yaw = 0.0
+            upper_arm_elev = upper_arm_elevation_rad(upper_arm_raw, down)
+        else:
+            upper_arm_yaw = float(math.atan2(upper_arm_raw[0], upper_arm_raw[2] + 1e-8))
+            upper_arm_elev = upper_arm_elevation_rad(upper_arm_raw)
+
+        elbow_bend = self._elbow_flexion_from_vec(sh_vec, el_vec, wr_vec)
+
+        hand_dir = forearm_raw.copy()
         if GestureClassifier.is_valid(hand_landmarks):
             wrist_h = hand_landmarks[0]
             middle_tip = hand_landmarks[12]
-            index_mcp = hand_landmarks[5]
-            pinky_mcp = hand_landmarks[17]
             hand_dir = self._lm_to_vec(middle_tip) - self._lm_to_vec(wrist_h)
-            palm_span = self._lm_to_vec(index_mcp) - self._lm_to_vec(pinky_mcp)
 
-        wrist_pitch = self._angle_between(forearm, hand_dir)
-        wrist_roll = math.atan2(palm_span[0], -palm_span[1] + 1e-8)
+        wrist_pitch = self._wrist_pitch_rad(
+            upper_arm_raw, forearm_raw, hand_dir, torso
+        )
 
         return {
             'upper_arm_yaw': upper_arm_yaw,
             'upper_arm_elev': upper_arm_elev,
             'elbow_bend': elbow_bend,
             'wrist_pitch': wrist_pitch,
-            'wrist_roll': wrist_roll,
             'palm_open': palm_open,
         }
+
+    @staticmethod
+    def _elbow_flexion_from_vec(
+        shoulder: np.ndarray,
+        elbow: np.ndarray,
+        wrist: np.ndarray,
+    ) -> float:
+        a = float(np.linalg.norm(elbow - shoulder))
+        b = float(np.linalg.norm(wrist - elbow))
+        c = float(np.linalg.norm(wrist - shoulder))
+        if a < 1e-6 or b < 1e-6:
+            return 0.0
+        cos_val = (a * a + b * b - c * c) / (2.0 * a * b)
+        cos_val = float(np.clip(cos_val, -1.0, 1.0))
+        return float(math.pi - math.acos(cos_val))
 
     @staticmethod
     def _palm_openness(hand_landmarks, is_right_arm: bool) -> float:
@@ -366,11 +716,25 @@ class ArmTeleopTracker(Node):
     def _tuple_to_dict(self, values: Tuple[float, ...]) -> Dict[str, float]:
         return {name: values[i] for i, name in enumerate(self.JOINT_NAMES)}
 
+    def _apply_j1_yaw_hold(self, values: Dict[str, float], horizontal_norm: float) -> Dict[str, float]:
+        """Hold J1 delta when upper arm is near-vertical (gimbal singularity)."""
+        if not self._tracking_cfg.get('j1_yaw_hold', True):
+            return values
+        min_h = float(self._tracking_cfg.get('j1_min_horizontal_norm', 0.05))
+        if horizontal_norm >= min_h:
+            self._last_yaw_delta = float(values['upper_arm_yaw'])
+            return values
+        if self._last_yaw_delta is not None:
+            result = dict(values)
+            result['upper_arm_yaw'] = self._last_yaw_delta
+            return result
+        return values
+
     def _apply_reference(self, values: Dict[str, float]) -> Dict[str, float]:
         if self._reference is None:
             return values
         ref = self._tuple_to_dict(self._reference)
-        angular = {'upper_arm_yaw', 'wrist_pitch', 'wrist_roll'}
+        angular = {'upper_arm_yaw', 'wrist_pitch'}
         result = {}
         for key in self.JOINT_NAMES:
             delta = values[key] - ref[key]
@@ -379,13 +743,41 @@ class ArmTeleopTracker(Node):
             result[key] = delta
         return result
 
+    def _decouple_deltas(self, values: Dict[str, float]) -> Dict[str, float]:
+        """Suppress J1 only while elbow is actively moving (not when elbow stays bent)."""
+        elbow_delta = abs(float(values.get('elbow_bend', 0.0)))
+        yaw_delta = abs(float(values.get('upper_arm_yaw', 0.0)))
+
+        elbow_rate = 0.0
+        if self._prev_elbow_delta is not None:
+            elbow_rate = abs(elbow_delta - self._prev_elbow_delta)
+        self._prev_elbow_delta = elbow_delta
+
+        if elbow_rate < 0.012 or elbow_rate <= yaw_delta * 0.6:
+            return values
+
+        strength = min(1.0, (elbow_rate - 0.012) / 0.06)
+        result = dict(values)
+        result['upper_arm_yaw'] = float(values['upper_arm_yaw']) * (1.0 - 0.75 * strength)
+        return result
+
     def _smooth(self, values: Dict[str, float]) -> Dict[str, float]:
         tup = self._dict_to_tuple(values)
         if self._filtered is None:
             self._filtered = tup
             return values
-        alpha = self._smoothing
-        smoothed = tuple(alpha * v + (1.0 - alpha) * f for v, f in zip(tup, self._filtered))
+        alpha_by_joint = {
+            'upper_arm_yaw': self._upper_arm_joint_smoothing,
+            'upper_arm_elev': 0.42,
+            'elbow_bend': 0.12,
+            'wrist_pitch': self._smoothing,
+            'palm_open': self._smoothing,
+        }
+        alphas = [alpha_by_joint.get(name, self._smoothing) for name in self.JOINT_NAMES]
+        smoothed = tuple(
+            alpha * v + (1.0 - alpha) * f
+            for alpha, v, f in zip(alphas, tup, self._filtered)
+        )
         self._filtered = smoothed
         return self._tuple_to_dict(smoothed)
 
@@ -540,6 +932,18 @@ class ArmTeleopTracker(Node):
         else:
             y_start = 140
 
+        coord_cn = '世界坐标' if self._use_world_landmarks else '图像坐标'
+        lines.append((f'角度源: {coord_cn}', y_start, 14, (140, 200, 255)))
+        y_start += 22
+        lines.append(('J1提示: 正面对镜头精度弱', y_start, 14, (255, 200, 80)))
+        lines.append(('建议身体转30~45°', y_start + 18, 14, (255, 200, 80)))
+        y_start += 40
+        if self._calibration_active:
+            label, _ = self.CALIBRATION_STEPS[self._calibration_step]
+            lines.append((f'标定 [{self._calibration_step + 1}/3]: {label}', y_start, 15, (0, 255, 200)))
+            lines.append(('按 K 确认当前姿势', y_start + 20, 14, (180, 180, 180)))
+            y_start += 44
+
         lines.extend([
             ('手势识别', y_start, 17, (180, 180, 180)),
             (gesture_cn, y_start + 28, 28, (0, 255, 255)),
@@ -562,10 +966,20 @@ class ArmTeleopTracker(Node):
         y = legend_y_start + len(legend) * 24 + 12
         lines.append(('人体关节', y, 17, (180, 180, 180)))
         y += 28
-        for name in self.JOINT_NAMES:
+        for name in self.ARM_JOINT_NAMES:
             val = values[name]
-            if name == 'palm_open':
-                text = f'{self.JOINT_LABELS[name]}: {val:.2f}'
+            if name == 'elbow_bend' and self._last_raw is not None:
+                abs_deg = math.degrees(self._last_raw['elbow_bend'])
+                text = (
+                    f'{self.JOINT_LABELS[name]}: Δ{math.degrees(val):+.0f}° '
+                    f'(实际{abs_deg:.0f}°)'
+                )
+            elif name == 'upper_arm_yaw' and self._last_raw is not None:
+                abs_deg = math.degrees(self._last_raw['upper_arm_yaw'])
+                text = (
+                    f'{self.JOINT_LABELS[name]}: Δ{math.degrees(val):+.0f}° '
+                    f'(方位{abs_deg:+.0f}°)'
+                )
             else:
                 text = f'{self.JOINT_LABELS[name]}: {math.degrees(val):+.1f}°'
             lines.append((text, y, 16, (235, 235, 235)))
@@ -597,7 +1011,7 @@ class ArmTeleopTracker(Node):
         y += 6
         lines.append(('快捷键:', y, 16, (140, 140, 140)))
         y += 22
-        for hint in ['竖臂朝上自动激活', 'R  重置', '1/2  切换左右臂', 'Q  退出']:
+        for hint in ['竖臂朝上自动激活', 'R  重置', 'K  三点标定', '1/2  锁定右/左臂', 'Q  退出']:
             lines.append((hint, y, 15, (120, 120, 120)))
             y += 20
 
@@ -609,7 +1023,7 @@ class ArmTeleopTracker(Node):
         return canvas
 
     def _update_gesture(self, hand_landmarks) -> None:
-        is_right = self._tracking_side == 'right'
+        is_right = self._mp_side_for_user(self._tracking_side) == 'right'
         raw = GestureClassifier.classify(hand_landmarks, is_right)
         self._current_gesture_raw = raw
         stable, changed = self._gesture_debouncer.update(raw)
@@ -623,16 +1037,16 @@ class ArmTeleopTracker(Node):
         if self._last_raw is None:
             self.get_logger().info(f'Detection rate: {rate:.0f}% (move into frame, side view)')
             return
-        parts = [f'{k}={math.degrees(self._last_raw[k]):.1f}' for k in self.JOINT_NAMES[:5]]
+        parts = [f'{k}={math.degrees(self._last_raw[k]):.1f}' for k in self.ARM_JOINT_NAMES]
         parts.append(f'palm={self._last_raw["palm_open"]:.2f}')
         parts.append(f'gesture={GestureClassifier.label_cn(self._current_gesture)}')
         self.get_logger().info(f'Detection {rate:.0f}% | ' + ' '.join(parts))
 
     def _switch_side(self, side: str) -> None:
-        self._tracking_side = side
-        self._arm_ids = self.RIGHT_ARM if side == 'right' else self.LEFT_ARM
-        self._reference = None
-        self._filtered = None
+        self._manual_side_lock = True
+        self._auto_side_hold = 0
+        self._apply_tracking_side(side)
+        self._reset_reference_state()
         self._activation_hold = 0
         self._teleop_active = False
         self._publish_teleop_status('WAITING')
@@ -640,7 +1054,86 @@ class ArmTeleopTracker(Node):
             int(self.get_parameter('gesture_debounce_frames').value)
         )
         self._current_gesture = 'None'
-        self.get_logger().info(f'Switched to {side} arm tracking')
+        label = '左臂' if side == 'left' else '右臂'
+        self.get_logger().info(f'Manual switch -> {label}')
+
+    def _calibration_file_path(self) -> str:
+        cal = self.get_parameter('calibration_file').value
+        if cal:
+            return str(cal)
+        try:
+            task_share = get_package_share_directory('rm_65_task')
+            return os.path.join(task_share, 'config', 'arm_teleop_calibration.yaml')
+        except Exception:
+            return os.path.expanduser('~/ros2_ws/src/rm_65_task/config/arm_teleop_calibration.yaml')
+
+    def _start_calibration(self) -> None:
+        self._calibration_active = True
+        self._calibration_step = 0
+        self._calibration_samples = []
+        self.get_logger().info(
+            f'Calibration started: step 1/3 -> {self.CALIBRATION_STEPS[0][0]}'
+        )
+
+    def _finish_calibration(self) -> None:
+        if len(self._calibration_samples) < 3:
+            self.get_logger().warn('Calibration incomplete; need 3 poses')
+            return
+        ref = self._calibration_samples[0]['measured']
+        scales: Dict[str, float] = {}
+        for key in ('upper_arm_yaw', 'upper_arm_elev', 'elbow_bend'):
+            measured: list = []
+            expected: list = []
+            for sample in self._calibration_samples[1:]:
+                m = float(sample['measured'][key]) - float(ref.get(key, 0.0))
+                e = float(sample['expected'][key])
+                if abs(m) > 0.02:
+                    measured.append(m)
+                    expected.append(e)
+            if not measured:
+                scales[key] = 1.0
+                continue
+            num = sum(e * m for e, m in zip(expected, measured))
+            den = sum(m * m for m in measured)
+            scale = num / den if den > 1e-6 else 1.0
+            scales[key] = float(max(0.3, min(3.0, scale)))
+
+        out_path = self._calibration_file_path()
+        payload = {
+            'calibration': {
+                'upper_arm_yaw': {'scale': scales.get('upper_arm_yaw', 1.0), 'offset': 0.0},
+                'upper_arm_elev': {'scale': scales.get('upper_arm_elev', 1.0), 'offset': 0.0},
+                'elbow_bend': {'scale': scales.get('elbow_bend', 1.0), 'offset': 0.0},
+                'wrist_pitch': {'scale': 1.0, 'offset': 0.0},
+            }
+        }
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, 'w', encoding='utf-8') as handle:
+            yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+        self._calibration_active = False
+        self._calibration_step = 0
+        self.get_logger().info(f'Calibration saved -> {out_path}')
+
+    def _calibration_capture(self, raw: Dict[str, float]) -> None:
+        if not self._reference:
+            self.get_logger().warn('请先激活跟随，再按 K 开始标定')
+            return
+        deltas = self._apply_reference(raw)
+        label, expected = self.CALIBRATION_STEPS[self._calibration_step]
+        self._calibration_samples.append({
+            'label': label,
+            'expected': expected,
+            'measured': dict(deltas),
+        })
+        self.get_logger().info(
+            f'Calibration captured {self._calibration_step + 1}/3: {label}'
+        )
+        self._calibration_step += 1
+        if self._calibration_step >= len(self.CALIBRATION_STEPS):
+            self._finish_calibration()
+        else:
+            next_label, _ = self.CALIBRATION_STEPS[self._calibration_step]
+            self.get_logger().info(f'Next pose: {next_label}')
 
     def _process_frame(self) -> None:
         ok, frame = self._cap.read()
@@ -648,6 +1141,9 @@ class ArmTeleopTracker(Node):
         if not ok:
             self.get_logger().warn('Failed to read PC camera frame')
             return
+
+        if self._mirror_preview:
+            frame = cv2.flip(frame, 1)
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self._timestamp_ms += 33
@@ -669,6 +1165,9 @@ class ArmTeleopTracker(Node):
             return
 
         pose_landmarks = result.pose_landmarks
+        angle_pose_landmarks = self._resolve_pose_for_angles(result, pose_landmarks)
+        timestamp_sec = self._timestamp_ms / 1000.0
+        self._maybe_auto_detect_arm(pose_landmarks)
         visible = all(self._visible(pose_landmarks, n) for n in ('shoulder', 'elbow', 'wrist'))
         status = 'tracking' if visible else 'low visibility'
         if visible:
@@ -681,12 +1180,20 @@ class ArmTeleopTracker(Node):
         hand_landmarks = self._get_hand_landmarks(result)
         palm_open = 0.5
         if hand_landmarks:
-            palm_open = self._palm_openness(hand_landmarks, self._tracking_side == 'right')
+            is_right_mp = self._mp_side_for_user(self._tracking_side) == 'right'
+            palm_open = self._palm_openness(hand_landmarks, is_right_mp)
 
         self._update_gesture(hand_landmarks)
 
-        raw = self._compute_arm_angles(pose_landmarks, hand_landmarks, palm_open)
+        raw = self._compute_arm_angles(
+            angle_pose_landmarks, hand_landmarks, palm_open, timestamp_sec
+        )
         self._last_raw = raw.copy()
+
+        upper_arm_raw = (
+            self._lm_to_vec(angle_pose_landmarks[self._arm_ids['elbow']])
+            - self._lm_to_vec(angle_pose_landmarks[self._arm_ids['shoulder']])
+        )
 
         activation_progress = 0.0
         activation_metrics = None
@@ -703,13 +1210,18 @@ class ArmTeleopTracker(Node):
                 hold_frames = int(self._activation_cfg['hold_frames'])
                 activation_progress = min(1.0, self._activation_hold / hold_frames)
                 if self._activation_hold >= hold_frames:
-                    self._reference = self._dict_to_tuple(raw)
+                    self._capture_activation_reference(
+                        raw, angle_pose_landmarks, upper_arm_raw
+                    )
                     self._filtered = None
                     self._set_teleop_active(True)
             else:
                 self._activation_hold = 0
 
-        values = self._smooth(self._apply_reference(raw))
+        ref_values = self._apply_j1_yaw_hold(
+            self._apply_reference(raw), self._last_horizontal_norm
+        )
+        values = self._smooth(self._decouple_deltas(ref_values))
         self._publish(values)
 
         if self._show_debug:
@@ -723,17 +1235,29 @@ class ArmTeleopTracker(Node):
             key = cv2.waitKey(1) & 0xFF
             if key in (ord('c'), ord('C')) and visible:
                 if activation_metrics and self._is_activation_pose(activation_metrics):
-                    self._reference = self._dict_to_tuple(raw)
+                    self._capture_activation_reference(
+                        raw, angle_pose_landmarks, upper_arm_raw
+                    )
                     self._filtered = None
                     self._activation_hold = 0
                     self._set_teleop_active(True)
                     self.get_logger().info('Manual activation at vertical pose')
                 else:
                     self.get_logger().warn('请先竖臂伸直朝上，再按 C')
+            elif key in (ord('k'), ord('K')):
+                if self._calibration_active:
+                    self._calibration_capture(raw)
+                elif self._teleop_active:
+                    self._start_calibration()
+                else:
+                    self.get_logger().warn('请先激活跟随，再按 K 标定')
             elif key in (ord('r'), ord('R')):
-                self._reference = None
-                self._filtered = None
+                self._calibration_active = False
+                self._calibration_step = 0
+                self._reset_reference_state()
                 self._activation_hold = 0
+                self._manual_side_lock = False
+                self._auto_side_hold = 0
                 self._set_teleop_active(False)
                 self.get_logger().info('Activation reset; raise arm straight up again')
             elif key == ord('1'):

@@ -23,6 +23,7 @@ def generate_launch_description():
                 {'tracking_side': LaunchConfiguration('tracking_side')},
                 {'show_debug': True},
                 {'config_file': config_file},
+                {'mirror_preview': True},
             ],
         ),
     ])

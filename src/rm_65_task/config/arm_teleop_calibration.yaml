@@ -1,0 +1,16 @@
+# 人体→机械臂关节标定（按 K 三点标定后自动生成/覆盖）
+# scale/offset 应用于 teleop_mapper 的人体增量
+
+calibration:
+  upper_arm_yaw:
+    scale: 1.0
+    offset: 0.0
+  upper_arm_elev:
+    scale: 1.0
+    offset: 0.0
+  elbow_bend:
+    scale: 1.0
+    offset: 0.0
+  wrist_pitch:
+    scale: 1.0
+    offset: 0.0

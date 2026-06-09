@@ -34,11 +34,11 @@ class TeleopMapper:
         'upper_arm_elev',
         'elbow_bend',
         'wrist_pitch',
-        'wrist_roll',
     ]
 
     def __init__(self, config: dict) -> None:
         self._config = config
+        self._calibration = config.get('calibration', {})
         home = config.get('robot_ready_pose', config.get('robot_home', [0.0] * 6))
         self._home = [float(v) for v in home]
         if len(self._home) != 6:
@@ -59,6 +59,7 @@ class TeleopMapper:
         return list(self._home)
 
     def map_joints(self, human: Dict[str, float]) -> List[float]:
+        human = self._apply_calibration(human)
         robot = list(self._home)
 
         for human_name, cfg in self._config.get('mapping', {}).items():
@@ -78,6 +79,18 @@ class TeleopMapper:
         robot = self._clamp(robot)
         robot = self._smooth(robot)
         return self._lock_inactive_joints(robot)
+
+    def _apply_calibration(self, human: Dict[str, float]) -> Dict[str, float]:
+        if not self._calibration:
+            return human
+        out = dict(human)
+        for name, cal in self._calibration.items():
+            if name not in out:
+                continue
+            scale = float(cal.get('scale', 1.0))
+            offset = float(cal.get('offset', 0.0))
+            out[name] = scale * float(out[name]) + offset
+        return out
 
     def _lock_inactive_joints(self, robot: List[float]) -> List[float]:
         if self._active_indices == set(range(6)):
@@ -114,12 +127,16 @@ class TeleopMapper:
         return robot
 
     def _smooth(self, robot: List[float]) -> List[float]:
-        alpha = float(self._config.get('output_smoothing', 0.25))
+        alpha_default = float(self._config.get('output_smoothing', 0.25))
+        per_joint = self._config.get('output_smoothing_by_joint', {})
+        joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
         if self._filtered is None:
             self._filtered = robot
             return robot
-        self._filtered = [
-            alpha * target + (1.0 - alpha) * current
-            for target, current in zip(robot, self._filtered)
-        ]
+        smoothed = []
+        for idx, (target, current) in enumerate(zip(robot, self._filtered)):
+            key = str(idx)
+            alpha = float(per_joint.get(key, per_joint.get(joint_names[idx], alpha_default)))
+            smoothed.append(alpha * target + (1.0 - alpha) * current)
+        self._filtered = smoothed
         return list(self._filtered)
