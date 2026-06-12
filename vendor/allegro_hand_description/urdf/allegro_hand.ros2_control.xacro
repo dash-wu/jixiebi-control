@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!-- 
+Copyright (c) 2024 PAL Robotics S.L. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+ -->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+
+  <xacro:macro name="ros2_control_allegro_hand" params="name pid_controllers reduction" >
+    <xacro:ros2_control_allegro_finger name="${name}_thumb_rotatory" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+    <xacro:ros2_control_allegro_finger name="${name}_thumb_flexor_1" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+    <xacro:ros2_control_allegro_finger name="${name}_thumb_flexor_2" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+    <xacro:ros2_control_allegro_finger name="${name}_thumb_flexor_3" pid_controllers="${pid_controllers}" reduction="${reduction}"/> 
+
+    <xacro:ros2_control_finger name="${name}" reduction="${reduction}" pid_controllers="${pid_controllers}" finger_num="1"/>
+    <xacro:ros2_control_finger name="${name}" reduction="${reduction}" pid_controllers="${pid_controllers}" finger_num="2"/>
+    <xacro:ros2_control_finger name="${name}" reduction="${reduction}" pid_controllers="${pid_controllers}" finger_num="3"/>
+  </xacro:macro>
+
+  <!-- MACRO for the 3 fingers -->
+  <xacro:macro name="ros2_control_finger" params="name reduction pid_controllers finger_num" >
+    <xacro:ros2_control_allegro_finger name="${name}_finger_${finger_num}_rotatory" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+    <xacro:ros2_control_allegro_finger name="${name}_finger_${finger_num}_flexor_1" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+    <xacro:ros2_control_allegro_finger name="${name}_finger_${finger_num}_flexor_2" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+    <xacro:ros2_control_allegro_finger name="${name}_finger_${finger_num}_flexor_3" pid_controllers="${pid_controllers}" reduction="${reduction}"/>
+  </xacro:macro>
+
+  <!-- MACRO for each joing of the hand -->
+  <xacro:macro name="ros2_control_allegro_finger" params="name pid_controllers reduction" >
+    <joint name="${name}_joint">
+      <xacro:if value="$(arg pid_controllers)">
+        <command_interface name="effort" />
+
+        <state_interface name="position" />
+        <state_interface name="velocity" />
+        <state_interface name="effort" />
+      </xacro:if>
+
+      <xacro:unless value="$(arg pid_controllers)">
+        <command_interface name="position" />
+
+        <state_interface name="position" />
+        <state_interface name="velocity" />
+        <state_interface name="effort" />
+      </xacro:unless>
+    </joint>
+
+    <xacro:include filename="$(find allegro_hand_description)/urdf/allegro_hand.transmission.xacro" />
+    <xacro:allegro_hand_transmission prefix="${name}" reduction="${reduction}"/>
+  </xacro:macro>
+
+</robot>

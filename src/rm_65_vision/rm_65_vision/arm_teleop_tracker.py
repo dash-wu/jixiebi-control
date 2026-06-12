@@ -136,6 +136,8 @@ class ArmTeleopTracker(Node):
             d_cutoff=float(oe.get('d_cutoff', 1.0)),
         )
         self._last_horizontal_norm = 0.0
+        self._body_angle_deg = 0.0
+        self._body_facing_camera = False
         self._frames_detected = 0
         self._frames_total = 0
         self._timestamp_ms = 0
@@ -407,6 +409,43 @@ class ArmTeleopTracker(Node):
             )
         self._use_world_landmarks = False
         return pose_landmarks
+
+    def _update_body_orientation(self, image_pose_landmarks) -> None:
+        """Estimate how much the user is facing the camera from shoulder line.
+
+        Uses image-space shoulders: slope of the shoulder line.
+        - Near 0° = facing camera (bad for J1 depth estimation)
+        - 20°~50° = side view (good)
+        - Near 90° = profile (arm occluded)
+
+        Also detects head/face yaw from nose-ear landmarks for cross-check.
+        """
+        ls = image_pose_landmarks[11]
+        rs = image_pose_landmarks[12]
+        # Shoulder-line angle in image plane w.r.t. horizontal
+        dx = float(rs.x - ls.x)
+        dy = float(rs.y - ls.y)
+        if abs(dx) < 0.005:
+            self._body_angle_deg = 90.0
+            self._body_facing_camera = False
+            return
+        slope_deg = math.degrees(math.atan2(dy, dx))
+        # Lower slope → shoulders nearly horizontal → facing camera
+        self._body_angle_deg = abs(slope_deg)
+
+        # Also check nose-to-ear ratio as cross-check for head yaw
+        nose = image_pose_landmarks[0]
+        le, re = image_pose_landmarks[7], image_pose_landmarks[8]
+        ear_mid = (le.x + re.x) * 0.5
+        nose_offset_norm = abs(nose.x - ear_mid) / max(abs(re.x - le.x), 0.01)
+        # nose_offset ≈ 0.5 when facing camera, large when turned
+        head_on = nose_offset_norm < 0.8
+
+        cfg = self._tracking_cfg
+        front_th = float(cfg.get('body_front_facing_threshold_deg', 18.0))
+        self._body_facing_camera = (
+            self._body_angle_deg < front_th and head_on
+        )
 
     def _filtered_arm_points(
         self,
@@ -717,10 +756,17 @@ class ArmTeleopTracker(Node):
         return {name: values[i] for i, name in enumerate(self.JOINT_NAMES)}
 
     def _apply_j1_yaw_hold(self, values: Dict[str, float], horizontal_norm: float) -> Dict[str, float]:
-        """Hold J1 delta when upper arm is near-vertical (gimbal singularity)."""
+        """Hold J1 delta when upper arm is near-vertical (gimbal singularity).
+
+        Also more aggressive when body is facing camera — depth estimation
+        is unreliable so J1 should only follow when user is clearly turned.
+        """
         if not self._tracking_cfg.get('j1_yaw_hold', True):
             return values
         min_h = float(self._tracking_cfg.get('j1_min_horizontal_norm', 0.05))
+        # When front-facing, require higher horizontal norm to trust J1
+        if self._body_facing_camera:
+            min_h = float(self._tracking_cfg.get('j1_min_horizontal_norm_front', 0.15))
         if horizontal_norm >= min_h:
             self._last_yaw_delta = float(values['upper_arm_yaw'])
             return values
@@ -935,9 +981,35 @@ class ArmTeleopTracker(Node):
         coord_cn = '世界坐标' if self._use_world_landmarks else '图像坐标'
         lines.append((f'角度源: {coord_cn}', y_start, 14, (140, 200, 255)))
         y_start += 22
-        lines.append(('J1提示: 正面对镜头精度弱', y_start, 14, (255, 200, 80)))
-        lines.append(('建议身体转30~45°', y_start + 18, 14, (255, 200, 80)))
-        y_start += 40
+
+        # Body orientation and J1 quality metrics
+        body_label = f'身体角: {self._body_angle_deg:.0f}°'
+        if self._body_facing_camera:
+            body_color = (80, 120, 255)
+            body_hint = ' ⚠正对镜头，J1不可靠'
+        else:
+            body_color = (0, 220, 120)
+            body_hint = ' ✓侧面，追踪良好'
+        lines.append((body_label + body_hint, y_start, 14, body_color))
+        y_start += 18
+
+        h_norm = self._last_horizontal_norm
+        h_label = f'水平模: {h_norm:.3f}'
+        if h_norm < 0.05:
+            h_color = (80, 80, 255)
+        elif h_norm < 0.10:
+            h_color = (255, 220, 80)
+        else:
+            h_color = (0, 220, 120)
+        if self._body_facing_camera:
+            lines.append((f'{h_label} (J1锁定中)', y_start, 14, (80, 120, 255)))
+        else:
+            lines.append((f'{h_label} ({">0.15" if self._body_facing_camera else ">0.05"}→J1解锁)', y_start, 14, h_color))
+        y_start += 22
+
+        if self._body_facing_camera:
+            lines.append(('⚠ 请侧身30~45°面对镜头', y_start, 14, (0, 180, 255)))
+            y_start += 20
         if self._calibration_active:
             label, _ = self.CALIBRATION_STEPS[self._calibration_step]
             lines.append((f'标定 [{self._calibration_step + 1}/3]: {label}', y_start, 15, (0, 255, 200)))
@@ -1165,6 +1237,7 @@ class ArmTeleopTracker(Node):
             return
 
         pose_landmarks = result.pose_landmarks
+        self._update_body_orientation(pose_landmarks)
         angle_pose_landmarks = self._resolve_pose_for_angles(result, pose_landmarks)
         timestamp_sec = self._timestamp_ms / 1000.0
         self._maybe_auto_detect_arm(pose_landmarks)

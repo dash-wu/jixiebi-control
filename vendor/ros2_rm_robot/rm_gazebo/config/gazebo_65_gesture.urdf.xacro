@@ -1,6 +1,9 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rm_65_description">
 
+    <xacro:arg name="use_sim_time" default="true"/>
+    <xacro:arg name="pid_controllers" default="false"/>
+
     <link name="world"/>
     <joint name="fixed" type="fixed">
         <parent link="world"/>
@@ -8,6 +11,16 @@
     </joint>
 
     <xacro:include filename="$(find rm_description)/urdf/rm_65_gazebo.urdf" />
+    <xacro:include filename="$(find allegro_hand_description)/urdf/allegro_hand.urdf.xacro" />
+    <xacro:include filename="$(find allegro_hand_description)/urdf/allegro_hand.ros2_control.xacro" />
+
+    <!-- Allegro Hand (PAL Robotics, Apache-2.0) -->
+    <!-- palm_link origin (hand root) mates to Link6 flange face -->
+    <!-- xyz: 7cm wrist offset along Link6 Z (arm axis direction) -->
+    <!-- rpy: 0 0 0 — no rotation, palm Z = Link6 Z = arm axis, fingers extend along arm direction -->
+    <xacro:allegro_hand name="gripper" parent="Link6" reflect="1">
+        <origin xyz="0.0 0.0 0.07" rpy="0 0 0"/>
+    </xacro:allegro_hand>
 
     <link name="arm_camera_link">
         <visual>
@@ -64,6 +77,10 @@
     </gazebo>
     <gazebo reference="link6">
         <material>Gazebo/Orange</material>
+        <gravity>false</gravity>
+    </gazebo>
+    <gazebo reference="gripper_palm_link">
+        <material>Gazebo/DarkGrey</material>
         <gravity>false</gravity>
     </gazebo>
 
@@ -150,6 +167,7 @@
             </state_interface>
             <state_interface name="velocity"/>
         </joint>
+        <xacro:ros2_control_allegro_hand name="gripper" pid_controllers="$(arg pid_controllers)" reduction="1.0"/>
     </ros2_control>
 
     <gazebo>

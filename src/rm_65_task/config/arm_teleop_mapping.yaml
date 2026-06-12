@@ -33,7 +33,7 @@ activation:
 mapping:
   upper_arm_yaw:
     index: 0
-    scale: -1.0
+    scale: 1.0
     deadzone: 0.012
     wrap: true
     max_delta: 3.1
@@ -81,7 +81,9 @@ output_smoothing_by_joint:
 # 追踪算法参数（world landmarks + swing-twist + J1 hold）
 tracking:
   j1_min_horizontal_norm: 0.05
+  j1_min_horizontal_norm_front: 0.15
   j1_yaw_hold: true
+  body_front_facing_threshold_deg: 18.0
   one_euro:
     min_cutoff: 1.0
     beta: 0.007

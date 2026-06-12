@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!-- 
+  Copyright (c) 2024 PAL Robotics S.L. All rights reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+ -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!--PIDS MACRO -->
+    <xacro:macro name="underactuated_finger" params="name">
+        <actuatedJoint>${name}</actuatedJoint>
+        <virtualJoint>
+            <name>${name}</name>
+            <scale_factor>2.0</scale_factor>
+            <pid_gains>
+                <p>0.0</p>
+                <i>0.0</i>
+                <d>0.0</d>
+                <i_max>1</i_max>
+                <i_min>-1</i_min>
+            </pid_gains>
+        </virtualJoint>
+    </xacro:macro>
+    
+    <!-- FINGERS PIDS MACRO -->
+    <xacro:macro name="fingers_pids" params="name finger_num">
+        <gazebo>
+        <plugin filename="libgazebo_underactuated_finger.so" name="gazebo_${name}_finger_${finger_num}">
+            <xacro:underactuated_finger name="${name}_finger_${finger_num}_rotatory_joint"/>
+            <xacro:underactuated_finger name="${name}_finger_${finger_num}_flexor_1_joint"/>
+            <xacro:underactuated_finger name="${name}_finger_${finger_num}_flexor_2_joint"/>
+            <xacro:underactuated_finger name="${name}_finger_${finger_num}_flexor_3_joint"/>
+        </plugin>
+        </gazebo>
+    </xacro:macro>
+
+    <!-- THUMB PIDS MACRO -->
+    <xacro:macro name="thumb_pids" params="name" >
+     <gazebo>
+        <plugin filename="libgazebo_underactuated_finger.so" name="gazebo_${name}_thumb">
+            <xacro:underactuated_finger name="${name}_thumb_rotatory_joint"/>
+            <xacro:underactuated_finger name="${name}_thumb_flexor_1_joint"/>
+            <xacro:underactuated_finger name="${name}_thumb_flexor_2_joint"/>
+            <xacro:underactuated_finger name="${name}_thumb_flexor_3_joint"/>
+        </plugin>
+        </gazebo>
+    </xacro:macro>
+</robot>

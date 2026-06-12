@@ -43,6 +43,8 @@ git clone -b humble https://github.com/RealManRobot/ros2_rm_robot.git
 ln -sf ~/ros2_ws/src/jixiebi-control/src/rm_65_vision .
 ln -sf ~/ros2_ws/src/jixiebi-control/src/rm_65_task .
 ln -sf ~/ros2_ws/src/ros2_rm_robot .
+ln -sf ~/ros2_ws/src/jixiebi-control/vendor/allegro_hand_description .
+ln -sf ~/ros2_ws/src/jixiebi-control/vendor/pal_urdf_utils .
 ```
 
 ### 4. 应用 Gazebo 场景补丁
@@ -50,6 +52,8 @@ ln -sf ~/ros2_ws/src/ros2_rm_robot .
 ```bash
 bash ~/ros2_ws/src/jixiebi-control/scripts/apply_ros2_rm_robot_patches.sh ~/ros2_ws/src/ros2_rm_robot
 ```
+
+补丁会在 RM65 末端挂载开源 **[Allegro Hand](https://github.com/pal-robotics/allegro_hand)**（PAL Robotics，Apache-2.0）。
 
 ### 5. 编译
 

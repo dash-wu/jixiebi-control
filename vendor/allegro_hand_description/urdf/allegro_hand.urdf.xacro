@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!-- 
+  Copyright (c) 2024 PAL Robotics S.L. All rights reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+ -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="allegro_hand" params="name parent *origin reflect">
+    <xacro:include filename="$(find pal_urdf_utils)/urdf/deg_to_rad.urdf.xacro" />
+    <xacro:include filename="$(find allegro_hand_description)/urdf/allegro_fingers.urdf.xacro" />
+    <xacro:include filename="$(find allegro_hand_description)/urdf/allegro_palm.urdf.xacro" />
+
+    <!--PALM-->
+    <xacro:palm name="${name}" parent="${parent}" reflect="${reflect}">
+        <xacro:insert_block name="origin" />
+    </xacro:palm>
+
+    <!--FINGERS-->
+    <xacro:finger name="${name}" finger_num="1" parent= "${name}_palm_link">
+        <origin xyz="0 ${0.0435*reflect} -0.001542" rpy="${5.0*deg_to_rad*-reflect} 0 0"/>
+    </xacro:finger>
+    <xacro:finger name="${name}" finger_num="2" parent= "${name}_palm_link">
+        <origin xyz="0 0 0.0007" rpy="0 0 0"/>
+    </xacro:finger>
+    <xacro:finger name="${name}" finger_num="3" parent= "${name}_palm_link">
+        <origin xyz="0 ${0.0435*-reflect} -0.001542" rpy="${5.0*deg_to_rad*reflect} 0 0"/>
+    </xacro:finger>
+    <!-- THUMB -->
+    <xacro:thumb name="${name}" parent= "${name}_palm_link">
+        <origin xyz="-0.0182 ${reflect * 0.019333} -0.045987" rpy="0 -${95*deg_to_rad} ${-reflect*90*deg_to_rad}"/>
+    </xacro:thumb>
+    </xacro:macro>
+</robot>

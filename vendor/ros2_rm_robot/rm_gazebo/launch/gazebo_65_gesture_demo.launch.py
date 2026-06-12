@@ -71,6 +71,14 @@ def generate_launch_description():
         output='screen',
     )
 
+    hand_group_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['hand_group_controller', '--controller-manager', '/controller_manager'],
+        parameters=[{'use_sim_time': True}],
+        output='screen',
+    )
+
     # 备用：若 spawn 回调时 controller_manager 尚未就绪，8 秒后再试一次
     delayed_controller_spawner = TimerAction(
         period=8.0,
@@ -81,6 +89,7 @@ def generate_launch_description():
                 arguments=[
                     'joint_state_broadcaster',
                     'rm_group_controller',
+                    'hand_group_controller',
                     '--controller-manager',
                     '/controller_manager',
                 ],
@@ -102,10 +111,17 @@ def generate_launch_description():
             on_exit=[rm_group_controller_spawner],
         )
     )
+    close_evt3 = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=rm_group_controller_spawner,
+            on_exit=[hand_group_controller_spawner],
+        )
+    )
 
     return LaunchDescription([
         close_evt1,
         close_evt2,
+        close_evt3,
         delayed_controller_spawner,
         gazebo,
         node_robot_state_publisher,

@@ -10,6 +10,9 @@ controller_manager:
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
+    hand_group_controller:
+      type: position_controllers/JointGroupPositionController
+
 rm_group_controller:
   ros__parameters:
     joints:
@@ -30,3 +33,24 @@ rm_group_controller:
     constraints:
       stopped_velocity_tolerance: 0.05
       goal_time: 0.0
+
+hand_group_controller:
+  ros__parameters:
+    joints:
+      - gripper_thumb_rotatory_joint
+      - gripper_thumb_flexor_1_joint
+      - gripper_thumb_flexor_2_joint
+      - gripper_thumb_flexor_3_joint
+      - gripper_finger_1_rotatory_joint
+      - gripper_finger_1_flexor_1_joint
+      - gripper_finger_1_flexor_2_joint
+      - gripper_finger_1_flexor_3_joint
+      - gripper_finger_2_rotatory_joint
+      - gripper_finger_2_flexor_1_joint
+      - gripper_finger_2_flexor_2_joint
+      - gripper_finger_2_flexor_3_joint
+      - gripper_finger_3_rotatory_joint
+      - gripper_finger_3_flexor_1_joint
+      - gripper_finger_3_flexor_2_joint
+      - gripper_finger_3_flexor_3_joint
+    interface_name: position

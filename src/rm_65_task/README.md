@@ -18,6 +18,20 @@ source ~/ros2_ws/install/setup.bash
 ros2 launch rm_65_task sim_arm_teleop_follow.launch.py
 ```
 
+仿真末端已挂载开源 **Allegro Hand**（16 关节，PAL Robotics / Apache-2.0）。握拳/张手手势会驱动手指收拢与张开。
+
+手动测试：
+
+```bash
+# 握拳（0~1000，6 通道映射到 Allegro 16 关节）
+ros2 topic pub --once /rm_driver/set_hand_angle_cmd rm_ros_interfaces/msg/Handangle \
+  "{hand_angle: [900,900,900,900,800,500], block: true}"
+
+# 张开
+ros2 topic pub --once /rm_driver/set_hand_angle_cmd rm_ros_interfaces/msg/Handangle \
+  "{hand_angle: [0,0,0,0,0,0], block: true}"
+```
+
 ## 启动（真机跟随）
 
 ```bash

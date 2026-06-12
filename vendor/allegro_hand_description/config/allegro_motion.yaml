@@ -1,0 +1,39 @@
+/**:
+  ros__parameters:
+    controllers: [gripper_controller]
+
+    motions:
+      close_hand:
+        joints: ['gripper_thumb_rotatory_joint', 'gripper_thumb_flexor_1_joint',
+                 'gripper_thumb_flexor_2_joint', 'gripper_thumb_flexor_3_joint',
+                 'gripper_finger_1_rotatory_joint', 'gripper_finger_1_flexor_1_joint',
+                 'gripper_finger_1_flexor_2_joint', 'gripper_finger_1_flexor_3_joint',
+                 'gripper_finger_2_rotatory_joint', 'gripper_finger_2_flexor_1_joint',
+                 'gripper_finger_2_flexor_2_joint', 'gripper_finger_2_flexor_3_joint',
+                 'gripper_finger_3_rotatory_joint', 'gripper_finger_3_flexor_1_joint',
+                 'gripper_finger_3_flexor_2_joint', 'gripper_finger_3_flexor_3_joint']
+        positions: [0.463, 1.0, 1.63, 1.23, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.463, 1.0, 1.63, 1.23, 0.0, 1.6, 1.0, 0.0, 0.0, 1.6, 1.0, 0.0, 0.0, 1.6, 1.0, 0.0]
+        times_from_start: [0.5, 2.0]
+        meta:
+          name: Close Hand
+          usage: demo
+          description: 'Close Hand'
+
+      open_hand:
+        joints: ['gripper_thumb_rotatory_joint', 'gripper_thumb_flexor_1_joint',
+                 'gripper_thumb_flexor_2_joint', 'gripper_thumb_flexor_3_joint',
+                 'gripper_finger_1_rotatory_joint', 'gripper_finger_1_flexor_1_joint',
+                 'gripper_finger_1_flexor_2_joint', 'gripper_finger_1_flexor_3_joint',
+                 'gripper_finger_2_rotatory_joint', 'gripper_finger_2_flexor_1_joint',
+                 'gripper_finger_2_flexor_2_joint', 'gripper_finger_2_flexor_3_joint',
+                 'gripper_finger_3_rotatory_joint', 'gripper_finger_3_flexor_1_joint',
+                 'gripper_finger_3_flexor_2_joint', 'gripper_finger_3_flexor_3_joint']
+        positions: [0.463, 1.0, 1.63, 1.23, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.463, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        times_from_start: [0.5,2.0]
+        meta:
+          name: Open Hand
+          usage: demo
+          description: 'Open Hand'
+

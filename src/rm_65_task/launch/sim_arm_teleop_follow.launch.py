@@ -61,6 +61,13 @@ def generate_launch_description():
                 {'mapping_file': mapping_file},
             ],
         ),
+        Node(
+            package='rm_65_task',
+            executable='sim_hand_bridge',
+            name='sim_hand_bridge',
+            output='screen',
+            parameters=[{'use_sim_time': True}],
+        ),
     ]
 
     return LaunchDescription([

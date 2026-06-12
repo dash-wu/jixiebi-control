@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>allegro_hand_description</name>
+  <version>1.9.0</version>
+  <description>Allegro Hand URDF models (vendored for RM65 Gazebo simulation).</description>
+  <maintainer email="student@todo.todo">student</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>pal_urdf_utils</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -5,7 +5,7 @@ package_name = 'rm_65_task'
 
 setup(
     name=package_name,
-    version='2.0.0',
+    version='0.1.0',
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'task_manager = rm_65_task.task_manager:main',
             'teleop_controller = rm_65_task.teleop_controller:main',
+            'sim_hand_bridge = rm_65_task.sim_hand_bridge:main',
         ],
     },
 )
